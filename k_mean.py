@@ -11,42 +11,57 @@ import matplotlib.colors as mcolors
 def compute_ch_value(pixels, labels, centroids):
     n = len(pixels)
     k = len(centroids)
+
     overall_mean = np.mean(pixels, axis=0)
+
     Wk = 0.0
     Bk = 0.0
+
     for i in range(k):
-        cluster_points = [pixels[j] for j in range(n) if labels[j] == i]
+        cluster_points = pixels[labels == i]
         n_i = len(cluster_points)
+
         if n_i > 0:
-            for p in cluster_points:
-                Wk += np.linalg.norm(p - centroids[i]) ** 2
+            diff = cluster_points - centroids[i]
+            Wk += np.sum(np.linalg.norm(diff, axis=1) ** 2)
             Bk += n_i * (np.linalg.norm(centroids[i] - overall_mean) ** 2)
+
     if Wk == 0 or k <= 1 or k >= n:
         return 0.0
+
     return (Bk / (k - 1)) / (Wk / (n - k))
 
 
 def kmeans_segmentation(img, k=5, max_iter=6, st_display=None):
     bands, height, width = img.shape
-    pixels = img.reshape(bands, -1).T
+
+    pixels = img.reshape(bands, height * width).T
+
     np.random.seed(42)
-    random_idx = np.random.choice(pixels.shape[0], k, replace=False)
-    centroids = pixels[random_idx]
+    random_ids = np.random.choice(len(pixels), k, replace=False)
+    centroids = pixels[random_ids]
 
     for step in range(max_iter):
-        distances = np.linalg.norm(pixels[:, np.newaxis] - centroids, axis=2)
+        diff = pixels[:, None] - centroids
+        distances = np.sqrt(np.sum(diff**2, axis=2))
         labels = np.argmin(distances, axis=1)
-        new_centroids = np.array([
-            pixels[labels == i].mean(axis=0) if np.any(labels == i) else centroids[i]
-            for i in range(k)
-        ])
+
+        new_centroids = centroids.copy()
+        for i in range(k):
+            group = pixels[labels == i]
+            if len(group) > 0:
+                new_centroids[i] = group.mean(axis=0)
+
         centroids = new_centroids
+
         if st_display:
-            st_display.write(f"Iteration {step+1} of {max_iter} for k={k} completed")
+            st_display.write(f"Iteration {step+1}/{max_iter} done")
 
     segmented = labels.reshape(height, width)
     ch_value = compute_ch_value(pixels, labels, centroids)
+
     return segmented, ch_value
+
 
 def load_image(file):
     src = rio.open(file)
@@ -54,18 +69,16 @@ def load_image(file):
     return img
 
 # =====================================================
-# 2️⃣ Streamlit GUI
+# Streamlit GUI
 # =====================================================
 
 st.title("Multispectral Image K-Means Segmentation")
 
-# Upload image
 uploaded_file = st.file_uploader("Upload a multispectral image (TIFF/JP2)", type=["tif","jp2"])
 if uploaded_file is not None:
     img = load_image(uploaded_file)
     st.success("Image loaded successfully!")
 
-    # Show RGB preview (first 3 bands)
     if img.shape[0] >= 3:
         rgb = np.stack([img[0], img[1], img[2]], axis=-1)
         rgb_norm = ((rgb - rgb.min()) / (rgb.max() - rgb.min()) * 255).astype(np.uint8)
@@ -73,40 +86,40 @@ if uploaded_file is not None:
     else:
         st.image(img[0], caption="First Band Preview", use_container_width=True)
 
-    # Slider for max K
-    max_k = st.slider("Select maximum K (number of clusters)", min_value=2, max_value=6, value=3)
+    max_k = st.slider("Select maximum K (number of clusters)", min_value=2, max_value=6, value=4)
 
-    # Button to run K-Means
     if st.button("Run K-Means Segmentation"):
-        st.info(f"Starting K-Means with max_k={max_k} ...")
+        st.info(f"Running K-Means for K = 2 to {max_k} ...")
 
         segmented_list = []
         ch_values = []
+        k_values = []
 
-        # Run K-Means for k=1..max_k
-        for i in range(max_k):
-            k = i + 1
+        # Start from k=2
+        for k in range(2, max_k + 1):
             seg, ch = kmeans_segmentation(img, k=k, max_iter=6, st_display=st)
             segmented_list.append(seg)
             ch_values.append(ch)
+            k_values.append(k)
             st.write(f"CH value for k={k}: {ch}")
 
-        # Plot CH vs K
+        # Plot CH curve
         plt.figure(figsize=(6,4))
-        plt.plot(range(1, max_k+1), ch_values, marker='o')
+        plt.plot(k_values, ch_values, marker='o')
         plt.title("Calinski-Harabasz Index vs Number of Clusters (k)")
         plt.xlabel("Number of Clusters (k)")
         plt.ylabel("CH Index")
         plt.grid(True)
         st.pyplot(plt)
 
-        # Show only the segmented image with maximum CH value
+
+        # Best k
         best_idx = np.argmax(ch_values)
         best_seg = segmented_list[best_idx]
-        best_k = best_idx + 1
-        st.write(f"Segmented Image with Best CH Value (k={best_k}, CH={ch_values[best_idx]:.2f})")
+        best_k = k_values[best_idx]
 
-        # Color mapping
+        st.write(f"Best segmentation: k={best_k}, CH={ch_values[best_idx]:.2f}")
+
         custom_colors = ['yellow', 'red', 'green', 'blue', 'purple', 'orange']
         cmap = mcolors.ListedColormap(custom_colors[:best_k])
 
@@ -116,7 +129,6 @@ if uploaded_file is not None:
         plt.tight_layout()
         plt.savefig("best_segmented.png")
         st.image("best_segmented.png", caption=f"Best Segmented Image (k={best_k})", use_container_width=True)
-
 
 
 #THIS BELOW IS BRUTE FORCE JUST TO UNDERSTAND THE LOGIC
